@@ -1104,7 +1104,8 @@ class MainWindow(QMainWindow):
 
     def _loadCameraPreset(self , camera_index : int):
         path = QFileDialog.getOpenFileName(self , "Open preset file" , "output" , "*.json")
-        if path:
+        
+        if path[0] != '':
             preset = self.cameraControl.cameras[camera_index].presetManager.getFromFile(path[0])
             self.settingsWindow.cameraSettingsFrames[camera_index].setPreset(preset)
             self._applyCameraSettings(camera_index)
@@ -1113,8 +1114,11 @@ class MainWindow(QMainWindow):
     
     def _saveCameraPreset(self , camera_index : int):
         path = QFileDialog.getSaveFileName(self , "Open preset file" , "output" , "*.json")
-        preset = self.settingsWindow.cameraSettingsFrames[camera_index].getPreset()
-        self.cameraControl.cameras[camera_index].presetManager.saveToFile(preset , path[0])
+        if path[0] != '':
+            preset = self.settingsWindow.cameraSettingsFrames[camera_index].getPreset()
+            self.cameraControl.cameras[camera_index].presetManager.saveToFile(preset , path[0])
+        else:
+            QMessageBox.information(self , "Failure" , "Cannot save preset")
 
     def _copyButton(self):
         camerasCount = len(self.cameraControl.cameras)
