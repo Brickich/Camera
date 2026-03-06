@@ -2,3 +2,6 @@
 /src/__pycache__
 /gxipy/__pycache__
 /output/*
+src/newcamera.py
+test.py
+TestApp.py

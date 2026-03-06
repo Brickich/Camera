@@ -35,7 +35,44 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QScrollArea,
     QFileDialog,
+    QGridLayout,
+    QSizePolicy,
 )
+
+
+def numpy_to_pixmap(numpy_image):
+    if numpy_image is None:
+        return None
+
+    try:
+        if numpy_image.ndim == 2:
+            height, width = numpy_image.shape
+            bytes_per_line = width
+            q_image = QImage(
+                numpy_image.data,
+                width,
+                height,
+                bytes_per_line,
+                QImage.Format.Format_Grayscale8,
+            )
+        elif numpy_image.ndim == 3 and numpy_image.shape[2] == 3:
+            height, width, channels = numpy_image.shape
+            bytes_per_line = 3 * width
+            q_image = QImage(
+                numpy_image.data,
+                width,
+                height,
+                bytes_per_line,
+                QImage.Format.Format_RGB888,
+            )
+        else:
+            print(f"Unsupported image format: {numpy_image.shape}")
+            return None
+        return QPixmap.fromImage(q_image)
+
+    except Exception as e:
+        print(f"Error converting numpy to pixmap: {e}")
+        return None
 
 
 class CameraSettingsFrame(QFrame):
@@ -591,8 +628,6 @@ class TriggerWorker(QThread):
     def _process_images(self):
         try:
             delay = self.camera.TriggerDelay.get()
-            # delay *=1e12
-            print(delay)
             for i, rawImage in enumerate(self.camera.rawImages):
                 if i > 0:
                     self.camera.timestamps.append(
@@ -613,8 +648,8 @@ class TriggerWorker(QThread):
                 f"Camera {self.cameraIndex+1} recorded: {len(self.camera.rawImages)} frames"
             )
             dirPath = self.checkDir()
-            self.camera.presetManager.saveToFile(
-                "trigger", f"{dirPath}/Trigger_preset.json"
+            self.camera.presetManager.savePreset(
+                preset_name = "trigger", filename = f"{dirPath}/Trigger_preset.json"
             )
             Thread(target=self.camera.saveImages, args=(dirPath,), daemon=True).start()
             self.imagesProcessed.emit(
@@ -656,11 +691,12 @@ class TriggerWorker(QThread):
         if not self.camera.isTriggered:
             return
         self.camera.isTriggered = False
-        print(f"Stopping camera {self.cameraIndex+1} trigger...")
+        
         
         self.camera.cam.stream_off()
         self.camera.applyPreset(self.camera.presetManager.getPreset("default"))
         self.camera.defaultSettings()
+        self.camera.previewMode()
         self.camera.cam.stream_on()
         self.camera.FramesCaptured = 0
 
@@ -704,14 +740,15 @@ class ImageWorker(QThread):
                     continue
 
                 numpyImage = self.camera.convertRawImage(rawImage)
-                pixmap = self.numpyToPixmap(numpyImage)
-                if self.camera.crosshairEnabled:
-                    pixmap = self.addCrosshair(pixmap)
-                if self.camera.imageAngle != 0:
-                    pixmap = self.rotateImage(pixmap, self.camera.imageAngle)
-                if self.camera.flipHorEnabled or self.camera.flipVerEnabled:
-                    pixmap = self.flipImage(pixmap)
+                pixmap = numpy_to_pixmap(numpyImage)
                 if pixmap:
+                    if self.camera.crosshairEnabled:
+                        pixmap = self.addCrosshair(pixmap)
+                    if self.camera.imageAngle != 0:
+                        pixmap = self.rotateImage(pixmap, self.camera.imageAngle)
+                    if self.camera.flipHorEnabled or self.camera.flipVerEnabled:
+                        pixmap = self.flipImage(pixmap)
+
                     self.imageReady.emit(self.cameraIndex, pixmap)
                 self.msleep(10)
             except Exception as e:
@@ -721,39 +758,6 @@ class ImageWorker(QThread):
         self.is_running = False
         self.wait()
 
-    def numpyToPixmap(self, numpyImage):
-        try:
-            if numpyImage is None:
-                return None
-
-            if numpyImage.ndim == 2:
-                height, width = numpyImage.shape
-                bytes_per_line = width
-                q_image = QImage(
-                    numpyImage.data,
-                    width,
-                    height,
-                    bytes_per_line,
-                    QImage.Format.Format_Grayscale8,
-                )
-            elif numpyImage.ndim == 3 and numpyImage.shape[2] == 3:
-                height, width, channels = numpyImage.shape
-                bytes_per_line = 3 * width
-                q_image = QImage(
-                    numpyImage.data,
-                    width,
-                    height,
-                    bytes_per_line,
-                    QImage.Format.Format_RGB888,
-                )
-            else:
-                print(f"Unsupported image format: {numpyImage.shape}")
-                return None
-
-            return QPixmap.fromImage(q_image)
-        except Exception as e:
-            print(f"Error converting numpy to pixmap: {e}")
-            return None
 
     def addCrosshair(self, pixmap: QPixmap):
         painter = QPainter(pixmap)
@@ -787,17 +791,18 @@ class ImageWorker(QThread):
 class ImageWindow(QVBoxLayout):
     def __init__(self, parent, cameras: list[Camera]):
         super().__init__(parent)
-        self.displayImagesLabels: list[QLabel] = []
-        self.displayWidgets = []
-        self.infoLabels: list[QLabel] = []
         self.cameras = cameras
+        self.infoLabels: list[QLabel] = []
+        self.displayImagesLabels: list[QLabel] = []
+        self.displayWidgets: list[QWidget] = []
 
         self.stackedWidget = QStackedWidget()
         self.stackedWidget.setStyleSheet("border : 1px solid ; margin : 2px ; padding : 0px ; border-radius: 2px")
         self.addWidget(self.stackedWidget)
 
         self.allCamerasWidget = QWidget()
-        self.allCamerasLayout = QVBoxLayout(self.allCamerasWidget)
+        self.allCamerasLayout = QGridLayout(self.allCamerasWidget)
+        self.allCamerasLayout.setSpacing(5)
         self.stackedWidget.addWidget(self.allCamerasWidget)
 
         self.singleCameraWidget = QWidget()
@@ -806,21 +811,18 @@ class ImageWindow(QVBoxLayout):
 
         for i in range(len(cameras)):
             cameraWidget = QWidget()
-            cameraWidget.setStyleSheet(
-                """
+            cameraWidget.setStyleSheet("""
                 QWidget {
                     background-color: #ffffff;
                     border: 1px solid #d0d0d0;
                     border-radius: 10px;
                 }
-                """
-            )
+            """)
             cameraLayout = QVBoxLayout(cameraWidget)
 
             cameraLabelLayout = QHBoxLayout()
             cameraLabel = QLabel(f"Camera {i+1}")
-            cameraLabel.setStyleSheet(
-                """
+            cameraLabel.setStyleSheet("""
                 QLabel {
                     color: #2c3e50;
                     font-weight: bold;
@@ -828,82 +830,104 @@ class ImageWindow(QVBoxLayout):
                     font-size: 14px;
                     border: 0px;
                 }
-                """
-            )
+            """)
             cameraLabel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-
             cameraLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
             cameraLabel.setMaximumHeight(15)
             cameraLabelLayout.addWidget(cameraLabel)
+            cameraLayout.addLayout(cameraLabelLayout)
 
             imageLabel = QLabel()
             imageLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            imageLabel.setStyleSheet(
-                """
+            imageLabel.setStyleSheet("""
                 QLabel {
-                    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
-                                        stop: 0 #f0f0f0, stop: 1 #e2e2e2);
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                        stop:0 #f0f0f0, stop:1 #e2e2e2);
                     border: 1px solid #b0b0b0;
                     border-radius: 4px;
-                    min-height: 150px;
                 }
-                """
-            )
+            """)
             imageLabel.setMinimumSize(200, 150)
+            imageLabel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            cameraLayout.addWidget(imageLabel, 1) 
 
             infoLabel = QLabel(self.cameras[i].getSettingsLabel())
             infoLabel.setMaximumHeight(50)
             infoLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            infoLabel.setStyleSheet(
-                """
+            infoLabel.setStyleSheet("""
                 QLabel {
                     color: green;
-                    font-size : 12px;      
+                    font-size: 12px;      
                     font-weight: bold;
                     background-color: #ffffff;
                     padding: 2px 8px;
                     border-radius: 10px;
                     border: 1px solid #c0c0c0;
                 }
-            """
-            )
-            
-            cameraLayout.addLayout(cameraLabelLayout)
-            cameraLayout.addWidget(imageLabel)
+            """)
             cameraLayout.addWidget(infoLabel)
+
             self.infoLabels.append(infoLabel)
             self.displayImagesLabels.append(imageLabel)
             self.displayWidgets.append(cameraWidget)
-            self.allCamerasLayout.addWidget(cameraWidget)
+
+            row = i       
+            col = 0
+            self.allCamerasLayout.addWidget(cameraWidget, row, col)
+            self.allCamerasLayout.setRowStretch(row, 1)
+            self.allCamerasLayout.setColumnStretch(col, 1)
 
         self.setDisplayMode("All", 0)
 
     def setDisplayMode(self, mode: str, cameraIndex: int):
         if mode == "All":
-            for widget in self.displayWidgets:
-                self.allCamerasLayout.addWidget(widget)
             self.stackedWidget.setCurrentIndex(0)
-        elif mode == "Single" and 0 <= cameraIndex < len(self.displayImagesLabels):
-            self.clearLayout(self.singleCameraLayout)
-            self.singleCameraLayout.addWidget(self.displayWidgets[cameraIndex])
+            self._rebuildAllCamerasLayout()
+        elif mode == "Single" and 0 <= cameraIndex < len(self.displayWidgets):
+
+            self._moveToSingle(cameraIndex)
             self.stackedWidget.setCurrentIndex(1)
 
-    def clearLayout(self, layout):
+    def _rebuildAllCamerasLayout(self):
+
+        self._clearLayout(self.allCamerasLayout)
+
+        for i, widget in enumerate(self.displayWidgets):
+            row = i
+            col = 0
+            self.allCamerasLayout.addWidget(widget, row, col)
+            self.allCamerasLayout.setRowStretch(row, 1)
+            self.allCamerasLayout.setColumnStretch(col, 1)
+
+    def _moveToSingle(self, cameraIndex):
+
+        self._clearLayout(self.singleCameraLayout)
+
+        widget = self.displayWidgets[cameraIndex]
+
+        widget.setParent(None)
+        self.singleCameraLayout.addWidget(widget)
+
+    def _clearLayout(self, layout):
         while layout.count():
-            child = layout.takeAt(0)
-            if child.widget():
-                child.widget().setParent(None)
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.setParent(None)
+            else:
+                pass
 
     def updateImage(self, camera_index: int, pixmap: QPixmap):
         if 0 <= camera_index < len(self.displayImagesLabels):
             scaled_pixmap = pixmap.scaled(
                 self.displayImagesLabels[camera_index].size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+                Qt.TransformationMode.SmoothTransformation
             )
             self.displayImagesLabels[camera_index].setPixmap(scaled_pixmap)
+  
 
-    def setCameraInfoLabel(self , camera_index : int) :
+    def setCameraInfoLabel(self, camera_index: int):
         label = self.cameras[camera_index].getSettingsLabel()
         self.infoLabels[camera_index].setText(label)
 
@@ -1041,16 +1065,18 @@ class MainWindow(QMainWindow):
     def _update_trigger_ui(self, cameraIndex: int):
         settings_frame = self.settingsWindow.cameraSettingsFrames[cameraIndex]
         settings_frame.triggerButton.setChecked(False)
-
+        settings_frame.captureModeButtonGroup.button(0).setChecked(True)
         if settings_frame.playButton.isChecked():
             self._toggleCameraRecording(True, cameraIndex)
 
     def _toggleCaptureMode(self, button: QPushButton, camerIndex: int):
         def switchMode(camera: Camera, mode: str):
+            camera.cam.stream_off()
             if mode == "preview":
                 camera.previewMode()
             elif mode == "trigger":
                 camera.triggerMode()
+            camera.cam.stream_on()
 
         settingsFrame = self.settingsWindow.cameraSettingsFrames[camerIndex]
         camera = self.cameraControl.cameras[camerIndex]
@@ -1101,17 +1127,23 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to apply settings: {str(e)}")
             self.settingsWindow.cameraSettingsFrames[cameraIndex].playButton.click()
 
+    def _loadCameraPreset(self, camera_index: int):
+        path = QFileDialog.getOpenFileName(self, "Open preset file", "output", "*.json")
 
-    def _loadCameraPreset(self , camera_index : int):
-        path = QFileDialog.getOpenFileName(self , "Open preset file" , "output" , "*.json")
-        
-        if path[0] != '':
-            preset = self.cameraControl.cameras[camera_index].presetManager.getFromFile(path[0])
+        if path[0] == "":
+            QMessageBox.information(self, "Failure", "Cannot open preset")
+            return
+        try:
+            preset = self.cameraControl.cameras[camera_index].presetManager.getFromFile(
+                path[0]
+            )
             self.settingsWindow.cameraSettingsFrames[camera_index].setPreset(preset)
             self._applyCameraSettings(camera_index)
-        else:
-            QMessageBox.information(self , "Failure" , "Cannot open preset")
-    
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load preset file : {e}")
+            return
+
+
     def _saveCameraPreset(self , camera_index : int):
         path = QFileDialog.getSaveFileName(self , "Open preset file" , "output" , "*.json")
         if path[0] != '':
@@ -1128,7 +1160,6 @@ class MainWindow(QMainWindow):
             for i in range(1 , camerasCount):
                 self.settingsWindow.cameraSettingsFrames[i].setPreset(preset)
                 self._applyCameraSettings(i)
-        
 
     def _showCameraApp(self):
         self.stackedWidget.widget(0).setFocus()
@@ -1215,48 +1246,15 @@ class FrameWorker(QThread):
         frame = images[new_index]
         timestamp = timestamps[new_index] if timestamps else 0
 
-        pixmap = self._numpy_to_pixmap(frame)
+        pixmap = numpy_to_pixmap(frame)
         if pixmap:
             scaled_pixmap = self._get_scaled_pixmap(pixmap)
             info_text = f"Frame: {new_index}\nTime: {timestamp}"
             self.frame_ready.emit(self.camera_index, scaled_pixmap, info_text)
 
-    def _numpy_to_pixmap(self, numpy_image):
-        if numpy_image is None:
-            return None
+    
 
-        try:
-            if numpy_image is None:
-                return None
-
-            if numpy_image.ndim == 2:
-                height, width = numpy_image.shape
-                bytes_per_line = width
-                q_image = QImage(
-                    numpy_image.data,
-                    width,
-                    height,
-                    bytes_per_line,
-                    QImage.Format.Format_Grayscale8,
-                )
-            elif numpy_image.ndim == 3 and numpy_image.shape[2] == 3:
-                height, width, channels = numpy_image.shape
-                bytes_per_line = 3 * width
-                q_image = QImage(
-                    numpy_image.data,
-                    width,
-                    height,
-                    bytes_per_line,
-                    QImage.Format.Format_RGB888,
-                )
-
-            return QPixmap.fromImage(q_image)
-
-        except Exception as e:
-            print(f"Error converting numpy to pixmap: {e}")
-            return None
-
-    def _get_scaled_pixmap(self, pixmap):
+    def _get_scaled_pixmap(self, pixmap : QPixmap):
         label_size = self.cam_attributes["imageLabel"].size()
         if (
             hasattr(self, "_cached_size")
@@ -1581,7 +1579,7 @@ class FrameViewer(QWidget):
 
             if images and 0 <= current_index < len(images):
                 worker = self.frame_workers[camera_index]
-                pixmap = worker._numpy_to_pixmap(images[current_index])
+                pixmap = numpy_to_pixmap(images[current_index])
                 if pixmap:
                     if hasattr(worker, "_cached_size"):
                         delattr(worker, "_cached_size")
@@ -1662,7 +1660,7 @@ class FrameViewer(QWidget):
         cam_attr["currentIndex"] = new_index
 
         worker = self.frame_workers[worker_index]
-        pixmap = worker._numpy_to_pixmap(images[new_index])
+        pixmap = numpy_to_pixmap(images[new_index])
         if pixmap:
             if hasattr(worker, "_cached_size"):
                 delattr(worker, "_cached_size")
@@ -1708,7 +1706,7 @@ class FrameViewer(QWidget):
                 delattr(worker, "_cached_pixmap")
 
             if images and len(images) > 0:
-                pixmap = worker._numpy_to_pixmap(images[0])
+                pixmap = numpy_to_pixmap(images[0])
                 if pixmap:
                     scaled_pixmap = worker._get_scaled_pixmap(pixmap)
                     self.camera_attributes[camera_index]["imageLabel"].setPixmap(

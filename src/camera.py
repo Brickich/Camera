@@ -31,14 +31,14 @@ class PresetManager:
             preset_data = {}
         self.presets[preset_name] = preset_data
 
-    def saveToFile(self, preset_name , filename):
+    def savePreset(self, preset_name : str , filename):
         try:
             with open(filename , "w") as f:
                 json.dump(self.presets[preset_name], f  , indent=4)
         except Exception as e:
             print(f"Exception in reading json : {e}")
     
-    def saveToFile(self , preset , filename):
+    def saveToFile(self , preset : dict , filename):
         try:
             with open(filename , "w") as f:
                 json.dump(preset, f  , indent=4)
@@ -49,6 +49,44 @@ class PresetManager:
         try:
             with open(path , "r") as f:
                 preset = json.load(f)
+                if not isinstance(preset , dict):
+                    raise Exception("Loaded preset is not a dictionary")
+                
+                required_keys = {
+                    "Width",
+                    "Height",
+                    "OffsetX",
+                    "OffsetY",
+                    "FrameRate",
+                    "ExposureTime",
+                    "Gain",
+                    "TriggerDelay",
+                    "FramesQuantity",
+                    "TriggerSource",
+                    "TriggerActivation",
+                }
+                missing_keys = required_keys - preset.keys()
+                if missing_keys:
+                    raise Exception("Missing a preset keys")
+
+                numeric_fields = [
+                    "Width",
+                    "Height",
+                    "OffsetX",
+                    "OffsetY",
+                    "FrameRate",
+                    "ExposureTime",
+                    "Gain",
+                    "TriggerDelay",
+                    "FramesQuantity",
+                ]
+                for field in numeric_fields:
+                    if not isinstance(preset[field], (int, float)):
+                        preset[field] = getattr(self.camera , field).get()
+                string_fields = ["TriggerSource", "TriggerActivation"]
+                for field in string_fields:
+                    if not isinstance(preset[field], str):
+                        preset[field] = getattr(self.camera , field).get()
                 print(f"Loading preset : {preset}")
                 return preset
         except Exception as e:
@@ -145,6 +183,8 @@ class Camera:
             self.Width = self.FeatureControl.get_int_feature("Width")
             self.Height = self.FeatureControl.get_int_feature("Height")
             self.ExposureTime = self.FeatureControl.get_float_feature("ExposureTime")
+            self.ExposureAuto = self.FeatureControl.get_enum_feature("ExposureAuto")
+            self.GainAuto = self.FeatureControl.get_enum_feature("GainAuto")
             self.Gain = self.FeatureControl.get_float_feature("Gain")
             self.FrameRate = self.FeatureControl.get_float_feature("AcquisitionFrameRate")
             self.OffsetX = self.FeatureControl.get_int_feature("OffsetX")
@@ -165,7 +205,8 @@ class Camera:
             self.DeviceLinkThroughputLimit.set(self.DeviceLinkThroughputLimit.get_range()['max'])
             self.DeviceLinkThroughputLimitMode  =self.FeatureControl.get_enum_feature("DeviceLinkThroughputLimitMode")
             self.DeviceLinkThroughputLimitMode.set("OFF")
-            self.DeviceReset = self.FeatureControl.get_command_feature("DeviceReset")
+            self.DeviceReset = self.FeatureControl.get_command_feature("DeviceReset") 
+            # self.DeviceReset.send_command()
             
             
 
@@ -194,7 +235,7 @@ class Camera:
                 "Height" : 220,
                 "OffsetX" : 0 , 
                 "OffsetY" : 0,
-                "ExposureTime" :40000.0,
+                "ExposureTime" :30000.0,
                 "FrameRate": 24.0,
                 "Gain" : self.Gain.get_range().get("max"),
                 "TriggerDelay" : self.TriggerDelay.get_range().get("min"),
@@ -210,6 +251,9 @@ class Camera:
 
             self.applyPreset(default_preset)
             self.defaultSettings()
+
+            self.GainAuto.set(gx.GxAutoEntry.ONCE)
+            self.ExposureAuto.set(gx.GxAutoEntry.ONCE)
             
         except Exception as e:
             print(f"{str(e)}")
@@ -240,71 +284,79 @@ class Camera:
             return Image.fromarray(numpyImage, "RGB")
 
     def defaultSettings(self):
-        self.FrameRateMode.set("ON")
-        self.TriggerMode.set("OFF")
+        self.FrameRateMode.set(gx.GxSwitchEntry.ON)
+        self.TriggerMode.set(gx.GxSwitchEntry.OFF)
 
     def triggerSettings(self):
         self.applyPreset(self.presetManager.getPreset("trigger"))
-        self.FrameRateMode.set("ON")
-        if self.type != "MER":
+        self.FrameRateMode.set(gx.GxSwitchEntry.ON)
+        if hasattr(self , "AcquisitionBurstFrameCount"):
             self.TriggerSelector.set(gx.GxTriggerSelectorEntry.FRAME_BURST_START)
             self.AcquisitionBurstFrameCount.set(self.AcquisitionBurstFrameCount.get_range().get("max"))
         
-        self.TriggerMode.set("ON")
+        self.TriggerMode.set(gx.GxSwitchEntry.ON)
 
-    def getSettingsLabel(self):
-        label = f"Width : {self.Width.get()} \t"
-        label += f"Height : {self.Height.get()} \t"
-        label += f"FrameRate : {self.CurrentFrameRate.get()} \t"
-        label += f"ExposureTime : {self.ExposureTime.get()} \t"
-        label += f"Gain : {self.Gain.get()}\n"
-        label += f"TriggerDelay : {self.TriggerDelay.get()} \t"
-        label += f"TriggerSource : {self.TriggerSource.get()} \t"
-        label += f"TriggerActivation : {self.TriggerActivation.get()} \t"
-        label += f"FramesQuantity : {self.FramesQuantity}"
-        return label
+
         
 
-    def applyPreset(self, preset):
+    def applyPreset(self, preset : dict):
+        if self.ExposureAuto.get()[0] != gx.GxAutoEntry.OFF :     
+            self.ExposureAuto.set(gx.GxAutoEntry.OFF)
+            self.GainAuto.set(gx.GxAutoEntry.OFF)
+
         self.OffsetX.set(0)
         self.OffsetY.set(0)
-
-        self.Width.set(preset["Width"])
-        self.Height.set(preset["Height"])
-
-        if self.type != "MER" and hasattr(self , "ExposureTimeMode"):
+      
+        if hasattr(self , "ExposureTimeMode"):
             if preset["ExposureTime"] < 20.0:
-                self.ExposureTimeMode.set("UltraShort")
+                self.ExposureTimeMode.set(gx.GxExposureTimeModeEntry.ULTRASHORT)
             else:
-                self.ExposureTimeMode.set("Standard")
+                self.ExposureTimeMode.set(gx.GxExposureTimeModeEntry.STANDARD)
 
-        self.ExposureTime.set(preset['ExposureTime'])
-        self.FrameRate.set(preset['FrameRate'])
-        self.Gain.set(preset['Gain'])
-        self.TriggerDelay.set(preset['TriggerDelay'])
-
-        self.FramesQuantity = preset["FramesQuantity"]
-        self.OffsetX.set(preset["OffsetX"])
-        self.OffsetY.set(preset['OffsetY'])
-        self.TriggerSource.set(preset['TriggerSource'])
-        self.TriggerActivation.set(preset['TriggerActivation'])
+        for (setting , value) in preset.items():
+            try:
+                if hasattr(self , setting):
+                    getattr(self , setting).set(value)
+            except :
+                try:
+                    setattr(self , setting , value)
+                except:
+                    print(f"Cannot apply {setting} setting")
         
     def previewMode(self):
-        if hasattr(self , "ExposureTimeMode"):
-            self.cam.stream_off()
+        if hasattr(self , "ExposureTimeMode") and self.ExposureTime.get() < 20.0:
             self.ExposureTimeMode.set("Standard")
-            self.cam.stream_on()
-        self.ExposureTime.set(float(40000))
+        self.ExposureAuto.set(gx.GxAutoEntry.ONCE)
+        self.GainAuto.set(gx.GxAutoEntry.ONCE)
+
+
 
 
     def triggerMode(self):
-        exposureTime = self.presetManager.getPreset("default").get("ExposureTime")
-        if exposureTime < 20.0 and hasattr(self , "ExposureTimeMode"):
-            self.cam.stream_off()
-            self.ExposureTimeMode.set("UltraShort")
-            self.cam.stream_on()
-        self.ExposureTime.set(exposureTime)  
+        exposure = self.presetManager.getPreset("default").get("ExposureTime" , 1000.0)
+        self.ExposureAuto.set(gx.GxAutoEntry.OFF)
+        self.GainAuto.set(gx.GxAutoEntry.OFF)   
+        
+        if hasattr(self , "ExposureTimeMode"):
+            if exposure < 20.0:
+                self.ExposureTimeMode.set(gx.GxExposureTimeModeEntry.ULTRASHORT)
+            else:
+                self.ExposureTimeMode.set(gx.GxExposureTimeModeEntry.STANDARD)   
+        self.ExposureTime.set(exposure)
 
+    def getSettingsLabel(self):
+        return (
+            f"Width : {self.Width.get()} \t"
+            f"Height : {self.Height.get()} \t"
+            f"FrameRate : {self.CurrentFrameRate.get()} \t"
+            f"ExposureTime : {self.ExposureTime.get()} \t"
+            f"Gain : {self.Gain.get()}\n"
+            f"TriggerDelay : {self.TriggerDelay.get()} \t"
+            f"TriggerSource : {self.TriggerSource.get()} \t"
+            f"TriggerActivation : {self.TriggerActivation.get()} \t"
+            f"FramesQuantity : {self.FramesQuantity}"
+        )
+    
     def  saveImages(self , dir_path ):
         for i, (img, timestamp) in enumerate(zip(self.images, self.timestamps)):
             img.save(f"{dir_path}/Frame{i+1}__T{timestamp} µs.png")
@@ -365,7 +417,7 @@ class Camera:
         if self.cam:
             print("{} is off".format(self.model))
             self.TriggerMode.set("OFF")
-            self.cam.close_device()
+            self.DeviceReset.send_command()
     
     def get_best_valid_bits(self, pixel_format):
         valid_bits = gx.DxValidBit.BIT0_7
